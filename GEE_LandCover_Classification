@@ -1,0 +1,87 @@
+// Step #1
+// Define variable roi (use geometry or upload shapefile)
+
+// Step #2
+// Cloud masking function for Landsat 8
+var maskL8 = function(imageCollection) {
+  var qa = imageCollection.select('QA_PIXEL');
+  var mask = qa.bitwiseAnd(1 << 3).eq(0);
+  return imageCollection.updateMask(mask);
+};
+
+// Step #3
+// Filter the Landsat 8 image collection based on date and region of interest (ROI)
+var L8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_TOA')
+        .filterDate('2015-01-01', '2015-06-30')
+        .filterBounds(roi)
+        .map(maskL8)
+        .median()
+        .clip(roi);
+
+// Step #4
+// True Color Visualization
+var RGBTrue = L8.select(['B4', 'B3', 'B2']);
+var RGBparam = { min: 0, max: 0.3 };
+Map.addLayer(RGBTrue, RGBparam, 'TRUE');
+
+// False Color Visualization - this example is to highlight urban areas
+var Composite = L8.select(['B7', 'B6', 'B4']);
+var Comparam = { min: 0, max: 0.3 };
+Map.addLayer(Composite, Comparam, 'Composite');
+
+// Step #5
+// Collect sample areas of interest for each land cover type
+// Use the 'Geometry' tool, rename each geometry according to the land cover class, import as a feature collection, add properties, and assign the property code and value. 
+//Make sure to distribute the samples evenly for representativeness.
+
+// Step #6
+// Merge samples from different land cover types
+var aoi = hutan.merge(kebun_campuran).merge(sawah).merge(pertanian_lahan_kering)
+              .merge(tanah_terbuka).merge(permukiman).merge(badan_air);
+
+// Step #7
+// Define bands used in land cover classification
+var bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7'];
+
+// Step #8
+// Processing the land cover classification
+var training = L8.select(bands).sampleRegions({
+  collection: aoi,
+  properties: ['lc'],
+  scale: 30
+});
+
+var classifier = ee.Classifier.smileCart().train({
+  features: training,
+  classProperty: 'lc',
+  inputProperties: bands
+});
+
+var classified = L8.select(bands).classify(classifier);
+
+Map.addLayer(classified, {min: 1, max: 7, palette:['darkgreen','lightgreen','yellow','grey','brown','pink','darkblue']}, 'classification');
+
+// Step #9
+// Calculate areas in square kilometers
+var class_areas = ee.Image.pixelArea().divide(1000 * 1000).addBands(classified)
+  .reduceRegion({
+    reducer: ee.Reducer.sum().group({
+      groupField: 1,
+      groupName: 'code',
+    }),
+    geometry: roi,
+    maxPixels: 500000000,
+    scale: 30,
+  }).get('groups');
+
+print(class_areas); 
+
+// Step #10
+// Export the classified image to Google Drive
+Export.image.toDrive({
+  image: classified,
+  description: 'Land Cover X',
+  scale: 30,
+  region: roi,
+  fileFormat: 'GeoTIFF'
+});
